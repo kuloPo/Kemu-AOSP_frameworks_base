@@ -2166,8 +2166,10 @@ class Transition implements BLASTSyncEngine.TransactionReadyListener {
 
     void ensureParticipantSurfaceVisibility() {
         for (int i = mParticipants.size() - 1; i >= 0; i--) {
-            mController.mAtm.mWindowManager.mAnimator.addSurfaceVisibilityUpdate(
-                    mParticipants.valueAt(i));
+            // An organized ancestor may be neither a participant nor an animation target.
+            // Reconcile its visibility too, or a visible child can remain hidden by its parent.
+            mController.mAtm.mWindowManager.mAnimator
+                    .addSurfaceVisibilityUpdateIncludingAnimatableParents(mParticipants.valueAt(i));
         }
     }
 

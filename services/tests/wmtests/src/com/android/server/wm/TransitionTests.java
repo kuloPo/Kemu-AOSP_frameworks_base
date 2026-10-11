@@ -1544,6 +1544,116 @@ public class TransitionTests extends WindowTestsBase {
     }
 
     @Test
+    public void testFinishTransitionShowsOrganizedHomeAncestor() {
+        final TransitionController controller = registerTestTransitionPlayer().mController;
+        final Transition transition = createHomeActivityTransition(controller);
+        final Task home = mDisplayContent.getDefaultTaskDisplayArea().getRootHomeTask();
+        transition.start();
+        mWm.mSyncEngine.abort(transition.getSyncId());
+        assertFalse(Transition.containsChangeFor(home, transition.mTargets));
+        clearInvocations(mTransaction);
+
+        controller.finishTransition(ActionChain.testFinish(transition));
+        waitUntilWindowAnimatorIdle();
+
+        assertTrue(home.isVisible());
+        verify(mTransaction).setVisibility(home.mSurfaceControl, true);
+    }
+
+    @Test
+    public void testAbortTransitionShowsOrganizedHomeAncestor() {
+        final TransitionController controller = registerTestTransitionPlayer().mController;
+        final Transition transition = createHomeActivityTransition(controller);
+        final Task home = mDisplayContent.getDefaultTaskDisplayArea().getRootHomeTask();
+        clearInvocations(mTransaction);
+
+        transition.abort();
+        waitUntilWindowAnimatorIdle();
+
+        assertTrue(home.isVisible());
+        verify(mTransaction).setVisibility(home.mSurfaceControl, true);
+    }
+
+    @Test
+    public void testFinishTransitionDefersCollectingHomeAncestor() {
+        testFinishTransitionDefersHomeAncestor(false /* playing */, false /* target */);
+    }
+
+    @Test
+    public void testFinishTransitionDefersPlayingHomeAncestor() {
+        testFinishTransitionDefersHomeAncestor(true /* playing */, true /* target */);
+    }
+
+    @Test
+    public void testFinishTransitionDefersPlayingNonTargetHomeAncestor() {
+        testFinishTransitionDefersHomeAncestor(true /* playing */, false /* target */);
+    }
+
+    private void testFinishTransitionDefersHomeAncestor(boolean playing, boolean target) {
+        final TransitionController controller = registerTestTransitionPlayer().mController;
+        final Transition transition = createHomeActivityTransition(controller);
+        final Task home = mDisplayContent.getDefaultTaskDisplayArea().getRootHomeTask();
+        transition.start();
+        mWm.mSyncEngine.abort(transition.getSyncId());
+        assertFalse(Transition.containsChangeFor(home, transition.mTargets));
+
+        final Transition next = controller.createTransition(TRANSIT_CHANGE);
+        next.collect(home);
+        if (playing) {
+            if (target) {
+                next.mChanges.get(home).mKnownConfigChanges |=
+                        android.content.pm.ActivityInfo.CONFIG_WINDOW_CONFIGURATION;
+            }
+            next.start();
+            mWm.mSyncEngine.abort(next.getSyncId());
+            assertEquals(target, Transition.containsChangeFor(home, next.mTargets));
+        }
+        clearInvocations(mTransaction);
+
+        controller.finishTransition(ActionChain.testFinish(transition));
+        waitUntilWindowAnimatorIdle();
+
+        // Finishing a child transition must not override another transition's surface state.
+        verify(mTransaction, never()).setVisibility(eq(home.mSurfaceControl), anyBoolean());
+
+        if (!playing) {
+            next.start();
+            mWm.mSyncEngine.abort(next.getSyncId());
+        }
+        clearInvocations(mTransaction);
+        controller.finishTransition(ActionChain.testFinish(next));
+        waitUntilWindowAnimatorIdle();
+        verify(mTransaction).setVisibility(home.mSurfaceControl, true);
+    }
+
+    private Transition createHomeActivityTransition(TransitionController controller) {
+        final Task home = mDisplayContent.getDefaultTaskDisplayArea().getRootHomeTask();
+        makeTaskOrganized(home);
+        final Task closingTask = new TaskBuilder(mSupervisor).setParentTask(home).build();
+        final ActivityRecord closing = createActivityRecord(closingTask);
+        closing.setVisibleRequested(true);
+        closing.setVisible(true);
+        final Task openingTask = new TaskBuilder(mSupervisor).setParentTask(home).build();
+        final ActivityRecord opening = createActivityRecord(openingTask);
+        opening.setVisibleRequested(false);
+        opening.setVisible(false);
+        mWm.mAnimator.ready();
+        waitUntilWindowAnimatorIdle();
+
+        final Transition transition = controller.createTransition(TRANSIT_OPEN);
+        transition.collect(closing);
+        transition.collect(opening);
+        closing.setVisibleRequested(false);
+        opening.setVisibleRequested(true);
+        assertTrue(home.isOrganized());
+        assertTrue(home.isVisible());
+        assertFalse(transition.mParticipants.contains(home));
+        // The Home root stays logically visible throughout the hand-off. Its initially hidden
+        // surface is not shown by the transition start transaction because it is organized.
+        return transition;
+    }
+
+    @Test
     public void testTransitionEndedListeners() {
         final TransitionController controller = new TestTransitionController(mAtm);
         controller.setSyncEngine(mWm.mSyncEngine);

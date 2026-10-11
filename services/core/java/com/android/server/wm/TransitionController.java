@@ -1116,7 +1116,7 @@ class TransitionController {
         record.ensureParticipantSurfaceVisibility();
         // The targets added by Transition#tryPromote also need to update.
         for (int i = record.mTargets.size() - 1; i >= 0; i--) {
-            mAtm.mWindowManager.mAnimator.addSurfaceVisibilityUpdate(
+            mAtm.mWindowManager.mAnimator.addSurfaceVisibilityUpdateIncludingAnimatableParents(
                     record.mTargets.get(i).mContainer);
         }
     }
