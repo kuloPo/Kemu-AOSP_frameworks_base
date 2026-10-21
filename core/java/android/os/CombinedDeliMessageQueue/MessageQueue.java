@@ -741,6 +741,7 @@ public final class MessageQueue {
         }
     }
 
+    @UnsupportedAppUsage
     Message next() {
         if (sUseDeliQueue) {
             return nextDeliQueue();
