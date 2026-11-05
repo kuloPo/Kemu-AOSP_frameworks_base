@@ -17,6 +17,7 @@
 package com.android.internal.os;
 
 import android.os.Process;
+import android.os.SystemProperties;
 import android.os.Trace;
 import android.system.ErrnoException;
 import android.system.Os;
@@ -101,11 +102,14 @@ public class WrapperInit {
      * @param invokeWith The wrapper command.
      * @param niceName The nice name for the application, or null if none.
      * @param targetSdkVersion The target SDK version for the app.
+     * @param instructionSet The instruction set of the app.
+     * @param appDataDir The private data directory of the app, or null if none.
      * @param pipeFd The pipe to which the application's pid should be written, or null if none.
      * @param args Arguments for {@link RuntimeInit#main}.
      */
     public static void execApplication(String invokeWith, String niceName,
-            int targetSdkVersion, String instructionSet, FileDescriptor pipeFd,
+            int targetSdkVersion, String instructionSet, String appDataDir,
+            FileDescriptor pipeFd,
             String[] args) {
         StringBuilder command = new StringBuilder(invokeWith);
 
@@ -126,9 +130,13 @@ public class WrapperInit {
         //    developers (e.g. enable debug-malloc), in which case backtraces are also useful.
         command.append(" -Xcompiler-option --generate-mini-debug-info");
 
+        appendNativeBridgeArgs(command, instructionSet, appDataDir,
+                VMRuntime.getCurrentInstructionSet(),
+                SystemProperties.get("ro.dalvik.vm.native.bridge"));
+
         command.append(" /system/bin --application");
         if (niceName != null) {
-            command.append(" '--nice-name=").append(niceName).append("'");
+            Zygote.appendQuotedShellArgs(command, new String[] {"--nice-name=" + niceName});
         }
         command.append(" com.android.internal.os.WrapperInit ");
         command.append(pipeFd != null ? pipeFd.getInt$() : 0);
@@ -137,6 +145,26 @@ public class WrapperInit {
         Zygote.appendQuotedShellArgs(command, args);
         preserveCapabilities();
         Zygote.execShell(command.toString());
+    }
+
+    // Package-private so command construction can be tested without executing a wrapper.
+    static void appendNativeBridgeArgs(StringBuilder command, String instructionSet,
+            String appDataDir, String runtimeInstructionSet, String nativeBridge) {
+        if (instructionSet == null || instructionSet.equals(runtimeInstructionSet)
+                || nativeBridge.isEmpty() || nativeBridge.equals("0")) {
+            return;
+        }
+        if (appDataDir == null || !appDataDir.startsWith("/") || appDataDir.endsWith("/")) {
+            throw new IllegalArgumentException(
+                    "Native bridge requires an absolute app data directory without a trailing slash");
+        }
+        // The new runtime must initialize the bridge with the app's ISA and private directory.
+        // These options do not change ART's own execution or boot-image instruction set.
+        Zygote.appendQuotedShellArgs(command, new String[] {
+                "-XX:NativeBridge=" + nativeBridge,
+                "-XX:NativeBridgeInstructionSet=" + instructionSet,
+                "-XX:NativeBridgeAppDataDir=" + appDataDir,
+        });
     }
 
     /**

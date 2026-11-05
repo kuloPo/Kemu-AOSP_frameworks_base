@@ -540,7 +540,7 @@ public class ZygoteInit {
 
             WrapperInit.execApplication(parsedArgs.mInvokeWith,
                     parsedArgs.mNiceName, parsedArgs.mTargetSdkVersion,
-                    VMRuntime.getCurrentInstructionSet(), null, args);
+                    VMRuntime.getCurrentInstructionSet(), null, null, args);
 
             throw new IllegalStateException("Unexpected return from WrapperInit.execApplication");
         } else {

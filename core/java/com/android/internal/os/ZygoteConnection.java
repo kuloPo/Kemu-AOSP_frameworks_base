@@ -521,8 +521,9 @@ class ZygoteConnection {
         if (parsedArgs.mInvokeWith != null) {
             WrapperInit.execApplication(parsedArgs.mInvokeWith,
                     parsedArgs.mNiceName, parsedArgs.mTargetSdkVersion,
-                    VMRuntime.getCurrentInstructionSet(),
-                    pipeFd, parsedArgs.mRemainingArgs);
+                    parsedArgs.mInstructionSet != null
+                            ? parsedArgs.mInstructionSet : VMRuntime.getCurrentInstructionSet(),
+                    parsedArgs.mAppDataDir, pipeFd, parsedArgs.mRemainingArgs);
 
             // Should not get here.
             throw new IllegalStateException("WrapperInit.execApplication unexpectedly returned");
