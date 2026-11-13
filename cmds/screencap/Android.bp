@@ -21,10 +21,14 @@ cc_defaults {
         "libbinder",
         "libcutils",
         "libgui",
-        "libhwui",
-        "libjnigraphics",
         "libui",
         "libutils",
+    ],
+
+    header_libs: [
+        "android_graphics_apex_headers",
+        "jni_headers",
+        "native_headers",
     ],
 }
 

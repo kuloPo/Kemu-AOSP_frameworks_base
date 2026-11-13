@@ -18,6 +18,7 @@
 #include <android/graphics/bitmap.h>
 #include <android/gui/DisplayCaptureArgs.h>
 #include <binder/ProcessState.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <ftl/concat.h>
@@ -149,6 +150,22 @@ static status_t notifyMediaScanner(const char* fileName) {
     return NO_ERROR;
 }
 
+// libhwui depends on a few hundred shared libraries and is only needed for
+// encoding, so it is loaded on demand instead of being linked.
+static decltype(&ABitmap_compressWithGainmap) loadCompressFunction() {
+    void* hwui = dlopen("libhwui.so", RTLD_NOW);
+    if (hwui == nullptr) {
+        fprintf(stderr, "Failed to load libhwui.so (%s)\n", dlerror());
+        return nullptr;
+    }
+    auto compress = reinterpret_cast<decltype(&ABitmap_compressWithGainmap)>(
+            dlsym(hwui, "ABitmap_compressWithGainmap"));
+    if (compress == nullptr) {
+        fprintf(stderr, "Failed to find ABitmap_compressWithGainmap (%s)\n", dlerror());
+    }
+    return compress;
+}
+
 status_t saveImage(const char* fn, std::optional<AndroidBitmapCompressFormat> format,
                    const ScreenCaptureResults& captureResults) {
     void* base = nullptr;
@@ -219,15 +236,16 @@ status_t saveImage(const char* fn, std::optional<AndroidBitmapCompressFormat> fo
         info.height = buffer->getHeight();
         info.stride = buffer->getStride() * bytesPerPixel(buffer->getPixelFormat());
 
-        int bitmapResult =
-                ABitmap_compressWithGainmap(&info, static_cast<ADataSpace>(dataspace), base,
-                                            gainmapBase, captureResults.hdrSdrRatio, *format, 100,
-                                            &fd,
-                                            [](void* fdPtr, const void* data, size_t size) -> bool {
-                                                int bytesWritten = write(*static_cast<int*>(fdPtr),
-                                                                         data, size);
-                                                return bytesWritten == size;
-                                            });
+        int bitmapResult = ANDROID_BITMAP_RESULT_BAD_PARAMETER;
+        if (const auto compress = loadCompressFunction()) {
+            bitmapResult = compress(&info, static_cast<ADataSpace>(dataspace), base, gainmapBase,
+                                    captureResults.hdrSdrRatio, *format, 100, &fd,
+                                    [](void* fdPtr, const void* data, size_t size) -> bool {
+                                        int bytesWritten =
+                                                write(*static_cast<int*>(fdPtr), data, size);
+                                        return bytesWritten == size;
+                                    });
+        }
 
         if (bitmapResult != ANDROID_BITMAP_RESULT_SUCCESS) {
             fprintf(stderr, "Failed to compress (error code: %d)\n", bitmapResult);
