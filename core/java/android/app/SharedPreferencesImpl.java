@@ -27,6 +27,7 @@ import android.os.FileUtils;
 import android.os.Looper;
 import android.system.ErrnoException;
 import android.system.Os;
+import android.system.OsConstants;
 import android.system.StructStat;
 import android.system.StructTimespec;
 import android.util.Log;
@@ -43,6 +44,7 @@ import org.xmlpull.v1.XmlPullParserException;
 
 import java.io.BufferedInputStream;
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
@@ -86,6 +88,7 @@ final class SharedPreferencesImpl implements SharedPreferences {
     @UnsupportedAppUsage
     private final File mFile;
     private final File mBackupFile;
+    private final File mNewFile;
     private final int mMode;
     private final Object mLock = new Object();
     private final Object mWritingToDiskLock = new Object();
@@ -132,6 +135,7 @@ final class SharedPreferencesImpl implements SharedPreferences {
     SharedPreferencesImpl(File file, int mode) {
         mFile = file;
         mBackupFile = makeBackupFile(file);
+        mNewFile = makeNewFile(file);
         mMode = mode;
         mLoaded = false;
         mMap = null;
@@ -155,30 +159,35 @@ final class SharedPreferencesImpl implements SharedPreferences {
             if (mLoaded) {
                 return;
             }
-            if (mBackupFile.exists()) {
-                mFile.delete();
-                mBackupFile.renameTo(mFile);
+            try {
+                restoreBackup();
+            } catch (IOException e) {
+                Log.w(TAG, "Couldn't restore SharedPreferences backup " + mBackupFile, e);
             }
         }
 
+        // Read the legacy backup if recovery could not publish it. A later save
+        // must complete recovery before it can publish a new version.
+        final File readFile = mBackupFile.exists() ? mBackupFile : mFile;
+
         // Debugging
-        if (mFile.exists() && !mFile.canRead()) {
-            Log.w(TAG, "Attempt to read preferences file " + mFile + " without permission");
+        if (readFile.exists() && !readFile.canRead()) {
+            Log.w(TAG, "Attempt to read preferences file " + readFile + " without permission");
         }
 
         Map<String, Object> map = null;
         StructStat stat = null;
         Throwable thrown = null;
         try {
-            stat = Os.stat(mFile.getPath());
-            if (mFile.canRead()) {
+            stat = Os.stat(readFile.getPath());
+            if (readFile.canRead()) {
                 BufferedInputStream str = null;
                 try {
                     str = new BufferedInputStream(
-                            new FileInputStream(mFile), 16 * 1024);
+                            new FileInputStream(readFile), 16 * 1024);
                     map = (Map<String, Object>) XmlUtils.readMapXml(str);
                 } catch (Exception e) {
-                    Log.w(TAG, "Cannot read " + mFile.getAbsolutePath(), e);
+                    Log.w(TAG, "Cannot read " + readFile.getAbsolutePath(), e);
                 } finally {
                     IoUtils.closeQuietly(str);
                 }
@@ -219,6 +228,36 @@ final class SharedPreferencesImpl implements SharedPreferences {
 
     static File makeBackupFile(File prefsFile) {
         return new File(prefsFile.getPath() + ".bak");
+    }
+
+    static File makeNewFile(File prefsFile) {
+        return new File(prefsFile.getPath() + ".new");
+    }
+
+    private static void syncDirectory(File directory) throws IOException {
+        FileDescriptor fd = null;
+        try {
+            fd = Os.open(directory.getPath(), OsConstants.O_RDONLY
+                    | OsConstants.O_CLOEXEC, 0);
+            Os.fsync(fd);
+        } catch (ErrnoException e) {
+            throw new IOException("Couldn't sync directory " + directory, e);
+        } finally {
+            IoUtils.closeQuietly(fd);
+        }
+    }
+
+    private void restoreBackup() throws IOException {
+        if (!mBackupFile.exists()) {
+            return;
+        }
+        try {
+            // Replace atomically; do not remove the readable file before rename.
+            Os.rename(mBackupFile.getPath(), mFile.getPath());
+        } catch (ErrnoException e) {
+            throw new IOException("Couldn't restore backup " + mBackupFile, e);
+        }
+        syncDirectory(mFile.getParentFile());
     }
 
     @UnsupportedAppUsage
@@ -729,101 +768,54 @@ final class SharedPreferencesImpl implements SharedPreferences {
 
     @GuardedBy("mWritingToDiskLock")
     private void writeToFile(MemoryCommitResult mcr, boolean isFromSyncCommit) {
-        long startTime = 0;
-        long existsTime = 0;
-        long backupExistsTime = 0;
-        long outputStreamCreateTime = 0;
-        long writeTime = 0;
-        long fsyncTime = 0;
-        long setPermTime = 0;
-        long fstatTime = 0;
-        long deleteTime = 0;
-
-        if (DEBUG) {
-            startTime = System.currentTimeMillis();
-        }
-
-        boolean fileExists = mFile.exists();
-
-        if (DEBUG) {
-            existsTime = System.currentTimeMillis();
-
-            // Might not be set, hence init them to a default value
-            backupExistsTime = existsTime;
-        }
-
-        // Rename the current file so it may be used as a backup during the next read
+        final long startTime = DEBUG ? System.currentTimeMillis() : 0;
+        final boolean fileExists = mFile.exists();
         if (fileExists) {
             boolean needsWrite = false;
-
-            // Only need to write if the disk state is older than this commit
             if (mDiskStateGeneration < mcr.memoryStateGeneration) {
                 if (isFromSyncCommit) {
                     needsWrite = true;
                 } else {
                     synchronized (mLock) {
-                        // No need to persist intermediate states. Just wait for the latest state to
-                        // be persisted.
-                        if (mCurrentMemoryStateGeneration == mcr.memoryStateGeneration) {
-                            needsWrite = true;
-                        }
+                        // Only the latest pending asynchronous state needs a write.
+                        needsWrite = mCurrentMemoryStateGeneration == mcr.memoryStateGeneration;
                     }
                 }
             }
-
             if (!needsWrite) {
                 mcr.setDiskWriteResult(false, true);
                 return;
             }
+        }
 
-            boolean backupFileExists = mBackupFile.exists();
-
-            if (DEBUG) {
-                backupExistsTime = System.currentTimeMillis();
-            }
-
-            if (!backupFileExists) {
-                if (!mFile.renameTo(mBackupFile)) {
-                    Log.e(TAG, "Couldn't rename file " + mFile
-                          + " to backup file " + mBackupFile);
+        try {
+            // Finish legacy recovery so a stale .bak cannot undo a later commit.
+            restoreBackup();
+            final boolean sync = !Flags.sharedpreferencesSkipFsync();
+            final long syncStartTime;
+            try (FileOutputStream str = createFileOutputStream(mNewFile)) {
+                if (str == null) {
                     mcr.setDiskWriteResult(false, false);
                     return;
                 }
-            } else {
-                mFile.delete();
-            }
-        }
-
-        // Attempt to write the file, delete the backup and return true as atomically as
-        // possible.  If any exception occurs, delete the new file; next time we will restore
-        // from the backup.
-        try {
-            FileOutputStream str = createFileOutputStream(mFile);
-
-            if (DEBUG) {
-                outputStreamCreateTime = System.currentTimeMillis();
+                XmlUtils.writeMapXml(mcr.mapToWriteToDisk, str);
+                ContextImpl.setFilePermissionsFromMode(mNewFile.getPath(), mMode, 0);
+                syncStartTime = System.currentTimeMillis();
+                if (sync && !FileUtils.sync(str)) {
+                    throw new IOException("Couldn't sync SharedPreferences file " + mNewFile);
+                }
             }
 
-            if (str == null) {
-                mcr.setDiskWriteResult(false, false);
-                return;
+            // Keep the previous complete file readable until the new file is ready.
+            Os.rename(mNewFile.getPath(), mFile.getPath());
+            if (sync) {
+                syncDirectory(mFile.getParentFile());
+                if (!fileExists) {
+                    // ContextImpl may have just created the shared_prefs directory.
+                    syncDirectory(mFile.getParentFile().getParentFile());
+                }
             }
-            XmlUtils.writeMapXml(mcr.mapToWriteToDisk, str);
-
-            writeTime = System.currentTimeMillis();
-
-            if (!Flags.sharedpreferencesSkipFsync()) {
-                FileUtils.sync(str);
-            }
-
-            fsyncTime = System.currentTimeMillis();
-
-            str.close();
-            ContextImpl.setFilePermissionsFromMode(mFile.getPath(), mMode, 0);
-
-            if (DEBUG) {
-                setPermTime = System.currentTimeMillis();
-            }
+            final long fsyncDuration = System.currentTimeMillis() - syncStartTime;
 
             try {
                 final StructStat stat = Os.stat(mFile.getPath());
@@ -832,59 +824,30 @@ final class SharedPreferencesImpl implements SharedPreferences {
                     mStatSize = stat.st_size;
                 }
             } catch (ErrnoException e) {
-                // Do nothing
-            }
-
-            if (DEBUG) {
-                fstatTime = System.currentTimeMillis();
-            }
-
-            // Writing was successful, delete the backup file if there is one.
-            mBackupFile.delete();
-
-            if (DEBUG) {
-                deleteTime = System.currentTimeMillis();
+                // The file may have been deleted concurrently by its owner.
             }
 
             mDiskStateGeneration = mcr.memoryStateGeneration;
-
             mcr.setDiskWriteResult(true, true);
-
-            if (DEBUG) {
-                Log.d(TAG, "write: " + (existsTime - startTime) + "/"
-                        + (backupExistsTime - startTime) + "/"
-                        + (outputStreamCreateTime - startTime) + "/"
-                        + (writeTime - startTime) + "/"
-                        + (fsyncTime - startTime) + "/"
-                        + (setPermTime - startTime) + "/"
-                        + (fstatTime - startTime) + "/"
-                        + (deleteTime - startTime));
-            }
-
-            long fsyncDuration = fsyncTime - writeTime;
             mSyncTimes.add((int) fsyncDuration);
             mNumSync++;
-
             if (DEBUG || mNumSync % 1024 == 0 || fsyncDuration > MAX_FSYNC_DURATION_MILLIS) {
-                mSyncTimes.log(TAG, "Time required to fsync " + mFile + ": ");
+                mSyncTimes.log(TAG, "Time required to persist " + mFile + ": ");
             }
-
+            if (DEBUG) {
+                Log.d(TAG, "write: " + (System.currentTimeMillis() - startTime) + " ms");
+            }
             return;
-        } catch (XmlPullParserException e) {
-            Log.w(TAG, "writeToFile: Got exception:", e);
-        } catch (IOException e) {
+        } catch (XmlPullParserException | IOException | ErrnoException e) {
             Log.w(TAG, "writeToFile: Got exception:", e);
         }
 
-        // Clean up an unsuccessfully written file
-        if (mFile.exists()) {
-            if (!mFile.delete()) {
-                Log.e(TAG, "Couldn't clean up partially-written file " + mFile);
-            }
+        // A failed write must not delete the last complete published version.
+        if (mNewFile.exists() && !mNewFile.delete()) {
+            Log.e(TAG, "Couldn't clean up partially-written file " + mNewFile);
         }
         mcr.setDiskWriteResult(false, false);
     }
-
 
     private static final class SharedPreferencesThreadFactory implements ThreadFactory {
         @Override

@@ -770,6 +770,7 @@ class ContextImpl extends Context {
         synchronized (ContextImpl.class) {
             final File prefs = getSharedPreferencesPath(name);
             final File prefsBackup = SharedPreferencesImpl.makeBackupFile(prefs);
+            final File prefsNew = SharedPreferencesImpl.makeNewFile(prefs);
 
             // Evict any in-memory caches
             final ArrayMap<File, SharedPreferencesImpl> cache = getSharedPreferencesCacheLocked();
@@ -777,9 +778,10 @@ class ContextImpl extends Context {
 
             prefs.delete();
             prefsBackup.delete();
+            prefsNew.delete();
 
             // We failed if files are still lingering
-            return !(prefs.exists() || prefsBackup.exists());
+            return !(prefs.exists() || prefsBackup.exists() || prefsNew.exists());
         }
     }
 
