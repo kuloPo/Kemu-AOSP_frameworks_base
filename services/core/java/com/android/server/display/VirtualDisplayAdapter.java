@@ -171,14 +171,21 @@ public class VirtualDisplayAdapter extends DisplayAdapter {
             return null;
         }
 
-        if (mVirtualDisplayDevices.size() >= mMaxDevices) {
+        // Kemu's system-owned app tabs are device displays. Keep the application
+        // quotas and their accounting independent of the number of open tabs.
+        boolean appTab = ownerUid == android.os.Process.SYSTEM_UID
+                && "com.android.emulator.multidisplay".equals(ownerPackageName)
+                && (flags & VIRTUAL_DISPLAY_FLAG_TRUSTED) != 0
+                && virtualDisplayConfig.getUniqueId() != null
+                && virtualDisplayConfig.getUniqueId().startsWith("kemu-tab-");
+        if (!appTab && mOwnerUids.size() >= mMaxDevices) {
             Slog.w(TAG, "Rejecting request to create private virtual display because "
                     + mMaxDevices + " devices already exist.");
             return null;
         }
 
         int noOfDevices = mNoOfDevicesPerPackage.get(ownerUid, /* valueIfKeyNotFound= */ 0);
-        if (noOfDevices >= mMaxDevicesPerPackage) {
+        if (!appTab && noOfDevices >= mMaxDevicesPerPackage) {
             Slog.w(TAG, "Rejecting request to create private virtual display because "
                     + mMaxDevicesPerPackage + " devices already exist for package "
                     + ownerPackageName + ".");
@@ -206,8 +213,10 @@ public class VirtualDisplayAdapter extends DisplayAdapter {
                 projection, mediaProjectionCallback, uniqueId, virtualDisplayConfig);
 
         mVirtualDisplayDevices.put(appToken, device);
-        mNoOfDevicesPerPackage.put(ownerUid, noOfDevices + 1);
-        mOwnerUids.put(appToken, ownerUid);
+        if (!appTab) {
+            mNoOfDevicesPerPackage.put(ownerUid, noOfDevices + 1);
+            mOwnerUids.put(appToken, ownerUid);
+        }
 
         try {
             if (projection != null) {

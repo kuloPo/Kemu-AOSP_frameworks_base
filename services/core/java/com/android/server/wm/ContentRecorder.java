@@ -30,6 +30,7 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.WindowConfiguration;
 import android.content.res.Configuration;
+import android.graphics.Matrix;
 import android.graphics.Point;
 import android.graphics.PointF;
 import android.graphics.Rect;
@@ -41,6 +42,8 @@ import android.os.ServiceManager;
 import android.view.ContentRecordingSession;
 import android.view.ContentRecordingSession.RecordContent;
 import android.view.Display;
+import android.view.InputEvent;
+import android.view.MotionEvent;
 import android.view.DisplayInfo;
 import android.view.SurfaceControl;
 import android.view.WindowManager;
@@ -91,6 +94,9 @@ final class ContentRecorder implements WindowContainerListener {
      */
     @Nullable
     private Rect mLastRecordedBounds = null;
+
+    // Inverse of the scale and translation used to fit the tab onto the encoder surface.
+    private Matrix mAppTabSurfaceToDisplay;
 
     /**
      * The last size of the surface mirrored out to.
@@ -152,6 +158,43 @@ final class ContentRecorder implements WindowContainerListener {
             // recording.
             startRecordingIfNeeded();
         }
+    }
+
+    void followAppTab(int displayId) {
+        final int previous = mContentRecordingSession.getDisplayToRecord();
+        if (previous != displayId) {
+            resetRecordingDisplay(previous);
+            mRecordedWindowContainer = null;
+            mContentRecordingSession.setDisplayToRecord(displayId);
+        } else if (isCurrentlyRecording()
+                && !mRecordedWindowContainer.getBounds().equals(mLastRecordedBounds)) {
+            onMirrorOutputSurfaceOrientationChanged();
+        }
+    }
+
+    boolean routeAppTabMirrorInput(InputEvent event, DisplayInfo desktop) {
+        final int source = mContentRecordingSession.getDisplayToRecord();
+        if (source == Display.DEFAULT_DISPLAY) {
+            return true;
+        }
+        if (event instanceof MotionEvent motion) {
+            if (mAppTabSurfaceToDisplay == null) {
+                return false;
+            }
+            // scrcpy reports coordinates in logical desktop pixels even for a scaled stream.
+            final Matrix transform = new Matrix();
+            transform.setScale((float) mLastConsumingSurfaceSize.x / desktop.logicalWidth,
+                    (float) mLastConsumingSurfaceSize.y / desktop.logicalHeight);
+            transform.postConcat(mAppTabSurfaceToDisplay);
+            motion.applyTransform(transform);
+            if (motion.getActionMasked() == MotionEvent.ACTION_DOWN
+                    && !mLastRecordedBounds.contains((int) Math.floor(motion.getX()),
+                            (int) Math.floor(motion.getY()))) {
+                return false;
+            }
+        }
+        event.setDisplayId(source);
+        return true;
     }
 
     void onMirrorOutputSurfaceOrientationChanged() {
@@ -320,8 +363,10 @@ final class ContentRecorder implements WindowContainerListener {
         // Update the cached session state first, since updating the service will result in always
         // returning to this instance to update recording state.
         mContentRecordingSession = null;
-        mDisplayContent.mWmService.mContentRecordingController.setContentRecordingSessionLocked(
-                null, mDisplayContent.mWmService);
+        if (mDisplayContent.mAppTabMirrorOwnerPid == 0) {
+            mDisplayContent.mWmService.mContentRecordingController.setContentRecordingSessionLocked(
+                    null, mDisplayContent.mWmService);
+        }
     }
 
     private void unregisterListener() {
@@ -651,6 +696,13 @@ final class ContentRecorder implements WindowContainerListener {
                 // Position needs to be updated when the mirrored DisplayArea has changed, since
                 // the content will no longer be centered in the output surface.
                 .setPosition(mRecordedSurface, shiftedX /* x */, shiftedY /* y */);
+        if (mDisplayContent.mAppTabMirrorOwnerPid != 0) {
+            if (mAppTabSurfaceToDisplay == null) {
+                mAppTabSurfaceToDisplay = new Matrix();
+            }
+            mAppTabSurfaceToDisplay.setTranslate(-shiftedX, -shiftedY);
+            mAppTabSurfaceToDisplay.postScale(1f / scale.x, 1f / scale.y);
+        }
         mLastRecordedBounds = new Rect(recordedContentBounds);
         mLastConsumingSurfaceSize.x = surfaceSize.x;
         mLastConsumingSurfaceSize.y = surfaceSize.y;

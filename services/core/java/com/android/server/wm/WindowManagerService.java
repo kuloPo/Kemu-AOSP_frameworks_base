@@ -284,6 +284,7 @@ import android.view.IWindowSessionCallback;
 import android.view.InputApplicationHandle;
 import android.view.InputChannel;
 import android.view.InputDevice;
+import android.view.InputEvent;
 import android.view.InputWindowHandle;
 import android.view.InsetsFrameProvider;
 import android.view.InsetsSourceControl;
@@ -8681,6 +8682,30 @@ public class WindowManagerService extends IWindowManager.Stub
         public int getTopFocusedDisplayId() {
             synchronized (mGlobalLock) {
                 return mRoot.getTopFocusedDisplayContent().getDisplayId();
+            }
+        }
+
+        @Override
+        public void registerAppTabMirror(int displayId, int ownerPid) {
+            synchronized (mGlobalLock) {
+                final DisplayContent dc = mRoot.getDisplayContentOrCreate(displayId);
+                if (dc != null) {
+                    dc.mAppTabMirrorOwnerPid = ownerPid;
+                    mWindowPlacerLocked.requestTraversal();
+                }
+            }
+        }
+
+        @Override
+        public boolean routeAppTabMirrorInput(int pid, InputEvent event) {
+            synchronized (mGlobalLock) {
+                for (int i = mRoot.getChildCount() - 1; i >= 0; --i) {
+                    final DisplayContent dc = mRoot.getChildAt(i);
+                    if (dc.mAppTabMirrorOwnerPid == pid) {
+                        return dc.routeAppTabMirrorInput(event);
+                    }
+                }
+                return true;
             }
         }
 

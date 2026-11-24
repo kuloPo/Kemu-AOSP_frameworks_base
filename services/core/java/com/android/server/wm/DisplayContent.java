@@ -218,6 +218,7 @@ import android.view.ContentRecordingSession;
 import android.view.Display;
 import android.view.DisplayCutout;
 import android.view.DisplayInfo;
+import android.view.InputEvent;
 import android.view.DisplayShape;
 import android.view.Gravity;
 import android.view.IDecorViewGestureListener;
@@ -362,6 +363,7 @@ class DisplayContent extends RootDisplayArea implements WindowManagerPolicy.Disp
      */
     @Nullable
     private ContentRecorder mContentRecorder;
+    int mAppTabMirrorOwnerPid;
 
     /**
      * The default per Display minimal size of tasks. Calculated at construction.
@@ -2576,7 +2578,11 @@ class DisplayContent extends RootDisplayArea implements WindowManagerPolicy.Disp
 
         // Update the configuration based on available input devices, lid switch,
         // and platform configuration.
-        config.touchscreen = Configuration.TOUCHSCREEN_NOTOUCH;
+        // Kemu tab displays share a routed digitizer. Moving its input focus
+        // does not change the touchscreen capability exposed to their apps.
+        final boolean appTab = isKemuAppTab(displayInfo);
+        config.touchscreen = appTab && mWmService.mIsTouchDevice
+                ? Configuration.TOUCHSCREEN_FINGER : Configuration.TOUCHSCREEN_NOTOUCH;
         config.keyboard = Configuration.KEYBOARD_NOKEYS;
         config.navigation = Configuration.NAVIGATION_NONAV;
 
@@ -6874,6 +6880,29 @@ class DisplayContent extends RootDisplayArea implements WindowManagerPolicy.Disp
         return mSandboxDisplayApis;
     }
 
+    private static boolean isKemuAppTab(DisplayInfo displayInfo) {
+        return displayInfo.type == Display.TYPE_VIRTUAL
+                && displayInfo.ownerUid == android.os.Process.SYSTEM_UID
+                && (displayInfo.flags & Display.FLAG_TRUSTED) != 0
+                && "com.android.emulator.multidisplay".equals(displayInfo.ownerPackageName)
+                && displayInfo.uniqueId != null
+                && displayInfo.uniqueId.startsWith("virtual:com.android.emulator.multidisplay:kemu-tab-");
+    }
+
+    private int appTabMirrorSource() {
+        final Task focused = mRootWindowContainer.getTopDisplayFocusedRootTask();
+        final DisplayContent source = focused != null ? focused.getDisplayContent() : null;
+        return source != null && isKemuAppTab(source.getDisplayInfo())
+                ? source.getDisplayId() : DEFAULT_DISPLAY;
+    }
+
+    boolean routeAppTabMirrorInput(InputEvent event) {
+        // Desktop coordinates need no transform, even before the mirror has an output surface.
+        if (!isCurrentlyRecording()) return appTabMirrorSource() == DEFAULT_DISPLAY;
+        return mContentRecorder.routeAppTabMirrorInput(event,
+                mRootWindowContainer.getDefaultDisplay().getDisplayInfo());
+    }
+
     private ContentRecorder getContentRecorder() {
         if (mContentRecorder == null) {
             mContentRecorder = new ContentRecorder(this);
@@ -6977,6 +7006,9 @@ class DisplayContent extends RootDisplayArea implements WindowManagerPolicy.Disp
             }
         }
 
+        if (mAppTabMirrorOwnerPid != 0) {
+            mContentRecorder.followAppTab(appTabMirrorSource());
+        }
         mContentRecorder.updateRecording();
     }
 

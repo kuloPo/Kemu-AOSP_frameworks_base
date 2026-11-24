@@ -149,6 +149,7 @@ import com.android.internal.util.Preconditions;
 import com.android.server.DisplayThread;
 import com.android.server.IoThread;
 import com.android.server.LocalServices;
+import com.android.server.wm.WindowManagerInternal;
 import com.android.server.SystemService;
 import com.android.server.Watchdog;
 import com.android.server.input.InputManagerInternal.LidSwitchCallback;
@@ -1029,6 +1030,13 @@ public class InputManagerService extends IInputManager.Stub
         }
 
         final int pid = Binder.getCallingPid();
+        final int uid = Binder.getCallingUid();
+        if ((uid == Process.SHELL_UID || uid == Process.ROOT_UID)
+                && event.getDisplayId() == Display.DEFAULT_DISPLAY
+                && !LocalServices.getService(WindowManagerInternal.class)
+                        .routeAppTabMirrorInput(pid, event)) {
+            return false;
+        }
         final long ident = Binder.clearCallingIdentity();
         final boolean injectIntoUid = targetUid != Process.INVALID_UID;
         final int result;

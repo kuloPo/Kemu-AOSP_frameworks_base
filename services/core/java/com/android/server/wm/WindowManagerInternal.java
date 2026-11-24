@@ -39,6 +39,7 @@ import android.util.Pair;
 import android.util.SparseArray;
 import android.view.ContentRecordingSession;
 import android.view.Display;
+import android.view.InputEvent;
 import android.view.IInputFilter;
 import android.view.IRemoteAnimationFinishedCallback;
 import android.view.IWindow;
@@ -860,6 +861,12 @@ public abstract class WindowManagerInternal {
      * @return The top focused display ID.
      */
     public abstract int getTopFocusedDisplayId();
+
+    /** Associates a privileged default-display mirror with its injecting process. */
+    public abstract void registerAppTabMirror(int displayId, int ownerPid);
+
+    /** Maps default-display input from that process onto its current recording. */
+    public abstract boolean routeAppTabMirrorInput(int pid, InputEvent event);
 
     /**
      * @return The UI context of top focused display.

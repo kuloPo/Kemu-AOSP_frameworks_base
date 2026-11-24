@@ -5145,8 +5145,19 @@ public final class DisplayManagerService extends SystemService {
         public int createVirtualDisplay(VirtualDisplayConfig virtualDisplayConfig,
                 IVirtualDisplayCallback callback, IMediaProjection projection,
                 String packageName) {
-            return createVirtualDisplayInternal(virtualDisplayConfig, callback, projection,
-                    null, null, packageName, Binder.getCallingUid());
+            final int uid = Binder.getCallingUid();
+            final int displayId = createVirtualDisplayInternal(virtualDisplayConfig, callback,
+                    projection, null, null, packageName, uid);
+            if (displayId != Display.INVALID_DISPLAY && projection == null
+                    && (uid == Process.SHELL_UID || uid == Process.ROOT_UID)
+                    && "scrcpy".equals(virtualDisplayConfig.getName())
+                    && SystemProperties.getBoolean("vendor.qemu.kemu.app_tabs", false)
+                    && virtualDisplayConfig.getFlags() == VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR
+                    && virtualDisplayConfig.getDisplayIdToMirror() == Display.DEFAULT_DISPLAY
+                    && !virtualDisplayConfig.isWindowManagerMirroringEnabled()) {
+                mWindowManagerInternal.registerAppTabMirror(displayId, Binder.getCallingPid());
+            }
+            return displayId;
         }
 
         @Override // Binder call

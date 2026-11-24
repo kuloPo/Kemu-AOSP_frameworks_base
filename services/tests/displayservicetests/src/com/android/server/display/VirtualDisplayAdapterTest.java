@@ -240,6 +240,29 @@ public class VirtualDisplayAdapterTest {
     }
 
     @Test
+    public void systemAppTabsDoNotConsumeApplicationDisplayQuota() {
+        for (int i = 0; i <= MAX_DEVICES; i++) {
+            String id = "kemu-tab-app" + i;
+            VirtualDisplayConfig config = new VirtualDisplayConfig.Builder(id, 32, 32, 160)
+                    .setUniqueId(id).build();
+            assertNotNull(mAdapter.createVirtualDisplayLocked(createCallback(), null,
+                    Process.SYSTEM_UID, "com.android.emulator.multidisplay", id, null,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_TRUSTED, config));
+        }
+
+        for (int i = 0; i <= MAX_DEVICES_PER_PACKAGE; i++) {
+            String id = "kemu-tab-other" + i;
+            VirtualDisplayConfig config = new VirtualDisplayConfig.Builder(id, 32, 32, 160)
+                    .setUniqueId(id).build();
+            DisplayDevice device = mAdapter.createVirtualDisplayLocked(createCallback(), null,
+                    1234, "test.package", id, null, DisplayManager.VIRTUAL_DISPLAY_FLAG_TRUSTED,
+                    config);
+            if (i < MAX_DEVICES_PER_PACKAGE) assertNotNull(device);
+            else assertNull(device);
+        }
+    }
+
+    @Test
     public void testCreateVirtualDisplay_MaxDisplaysPerPackage() {
         List<IVirtualDisplayCallback> callbacks = new ArrayList<>();
         int ownerUid = 1234;
